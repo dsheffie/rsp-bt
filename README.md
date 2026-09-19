@@ -5,6 +5,18 @@ MIPS integer subset plus a COP2 vector unit (8 x 16-bit lanes, a 48-bit accumula
 lane) running from 4 KB of instruction memory against 4 KB of data memory.  "Microcode"
 is ordinary MIPS machine code for that core.
 
+**Provenance.**  This is modeled on David Sheffield's
+[mips32-bt](https://github.com/dsheffie/mips32-bt), a profile-driven LLVM binary
+translator for 32-bit MIPS, and was hacked together by Claude (Anthropic's AI model).  It
+borrows that project's architecture and naming - one class per instruction with a
+`generateIR()` method, a codegen context in the role of `regionCFG` - but no code was
+carried over; the implementation here is new.  It does two things mips32-bt does not:
+it translates *statically*, walking a whole instruction-memory image ahead of time
+instead of forming regions from an execution profile, and it handles the RSP's bespoke
+COP2 vector instructions (the 8 x 16-bit lanes, the 48-bit accumulators and their
+clamping rules, the carry/compare/clip flags, and the byte-addressed vector loads and
+stores).  See mips32-bt for the original design.
+
 - `rsp.cc`, `rsp.hh` - the interpreter and the machine state (`rsp_t`).  Implements what
   rspboot and the stock audio microcode execute, and dies loudly on anything else.
 - `rspInstruction.*` - one class per instruction with a `generateIR()` method, the shape
