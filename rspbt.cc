@@ -23,7 +23,13 @@
 /* ---- callbacks from translated code into the interpreter's device/slow paths ---- */
 extern "C" {
   uint32_t rspbt_mfc0(rsp_t *c, uint32_t rd) { return c->mfc0(rd); }
-  void rspbt_mtc0(rsp_t *c, uint32_t rd, uint32_t x) { c->mtc0(rd, x); }
+  /* Returns non-zero if this write replaced instruction memory, which means the
+   * translation we are executing inside is no longer the code that should run. */
+  uint32_t rspbt_mtc0(rsp_t *c, uint32_t rd, uint32_t x) {
+    const uint64_t gen = c->imem_gen;
+    c->mtc0(rd, x);
+    return (c->imem_gen != gen) ? 1u : 0u;
+  }
   void rspbt_lwc2(rsp_t *c, uint32_t insn) { c->lwc2(insn); }
   void rspbt_swc2(rsp_t *c, uint32_t insn) { c->swc2(insn); }
   uint32_t rspbt_rd(rsp_t *c, uint32_t a, uint32_t n) { return (n == 2) ? c->rd16(a) : c->rd32(a); }
@@ -336,33 +342,49 @@ rspbt::~rspbt() {
 }
 
 void rspbt::run(rsp_t &c, uint32_t pc, const std::vector<uint32_t> &hint_roots) {
-  const uint8_t *imem = c.mem + 0x1000;
-  /* memoized per instruction-memory image.  A memcmp against the image used last time
-   * is far cheaper than hashing 4 KB on every task, and is also what makes a hash
-   * collision harmless for the common case. */
-  uint64_t hash = 0;
-  if(p->last == nullptr or memcmp(p->last->imem, imem, 0x1000) != 0) {
-    hash = fnv1a64(imem, 0x1000);
-    p->last = &p->cache[hash];
-    memcpy(p->last->imem, imem, 0x1000);
-  }
-  image_t &img = *p->last;
-  if(img.roots.insert(pc & 0xffc).second) {
-    img.stale = true;
-  }
-  for(uint32_t h : hint_roots) {
-    if(img.roots.insert(h & 0xffc).second) {
+  c.halted = false;
+  uint32_t cur = pc;
+
+  /* Re-entered whenever the microcode replaces itself.  A translation belongs to one
+   * instruction-memory image, so a task that pages overlays in and out is really a
+   * sequence of images, each with its own translation -- which the cache below hands
+   * back for free once it has seen them, so swapping costs a lookup rather than a
+   * compile. */
+  for(;;) {
+    const uint8_t *imem = c.mem + 0x1000;
+    /* memoized per instruction-memory image.  A memcmp against the image used last time
+     * is far cheaper than hashing 4 KB on every task, and is also what makes a hash
+     * collision harmless for the common case. */
+    if(p->last == nullptr or memcmp(p->last->imem, imem, 0x1000) != 0) {
+      p->last = &p->cache[fnv1a64(imem, 0x1000)];
+      memcpy(p->last->imem, imem, 0x1000);
+    }
+    image_t &img = *p->last;
+    if(img.roots.insert(cur & 0xffc).second) {
       img.stale = true;
     }
-  }
-  if(img.stale) {
-    auto t0 = std::chrono::steady_clock::now();
-    p->compile(*this, img, fnv1a64(imem, 0x1000), imem);
-    compile_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-  }
-  c.halted = false;
-  uint32_t next = img.fn(&c, pc);
-  if(next != 0xffffffffu) {
+    for(uint32_t h : hint_roots) {
+      if(img.roots.insert(h & 0xffc).second) {
+	img.stale = true;
+      }
+    }
+    if(img.stale) {
+      auto t0 = std::chrono::steady_clock::now();
+      p->compile(*this, img, fnv1a64(imem, 0x1000), imem);
+      compile_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+
+    const uint64_t gen = c.imem_gen;
+    uint32_t next = img.fn(&c, cur);
+    if(next == 0xffffffffu) {
+      return;                          /* BREAK: the task is done */
+    }
+    if(c.imem_gen != gen) {
+      /* an overlay landed in IMEM: go round and pick up the image it became */
+      n_overlay_swaps++;
+      cur = next;
+      continue;
+    }
     /* a jr nobody anticipated (or an untranslatable word): finish in the interpreter
      * and make the target a root for next time */
     n_fallbacks++;
@@ -370,5 +392,6 @@ void rspbt::run(rsp_t &c, uint32_t pc, const std::vector<uint32_t> &hint_roots) 
       img.stale = true;
     }
     c.run(next);
+    return;
   }
 }

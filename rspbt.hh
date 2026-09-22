@@ -25,6 +25,7 @@ public:
   void run(rsp_t &c, uint32_t pc, const std::vector<uint32_t> &hint_roots);
 
   uint64_t n_compiles = 0, n_fallbacks = 0;
+  uint64_t n_overlay_swaps = 0;   /* times a task replaced its own instruction memory */
   double compile_seconds = 0.0;
   bool dump_ir = false;          /* write rspbt_<hash>.ll before and after optimization */
 

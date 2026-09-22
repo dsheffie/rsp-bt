@@ -4,3 +4,6 @@ obj/
 *.a
 rsp_*.ll
 *~
+doc_rsp_guide.txt
+tests/rsp_difftest
+r4300bt_*.ll

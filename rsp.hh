@@ -11,6 +11,15 @@
  *
  * Only what rspboot + the audio microcode (aspMain) execute is implemented;
  * anything else dies loudly rather than guessing. */
+/* Executed vector ALU ops and vector load/stores, for work-per-instruction reporting.
+ * Compiled out unless RSP_WORK_COUNTERS is defined -- they sit in the innermost loop. */
+extern uint64_t g_rsp_vec, g_rsp_vmem;
+#ifdef RSP_WORK_COUNTERS
+#define RSP_WORK(c) ((c)++)
+#else
+#define RSP_WORK(c) do { } while(0)
+#endif
+
 struct rsp_t {
   uint32_t r[32] = {0};
   uint32_t pc = 0;
@@ -24,6 +33,16 @@ struct rsp_t {
 
   uint32_t sp_mem_addr = 0;
   uint32_t sp_dram_addr = 0;
+  /* SP_STATUS.  The eight SIG bits (14..7) are how the CPU and a resident microcode
+   * talk to each other -- a command queue signals work with them -- so both sides read
+   * and write this same register: the core through COP0 c4, the CPU through the SP
+   * register block. */
+  uint32_t sp_status = 0;
+  /* Bumped whenever a DMA replaces instruction memory.  A translation is only valid for
+   * the image it was made from, so an overlay landing in IMEM mid-task invalidates the
+   * code currently executing -- the interpreter re-fetches and never notices, a
+   * translation would happily keep running the old microcode. */
+  uint64_t imem_gen = 0;
   bool halted = true;
 
   uint8_t *rdram = nullptr;           /* host pointer to guest physical 0 */
@@ -41,9 +60,16 @@ struct rsp_t {
   void wr32(uint32_t a, uint32_t x);
   void wr16(uint32_t a, uint16_t x);
 
-private:
+  /* also driven from the CPU side: a ROM that kicks the RSP itself sets up the same
+   * transfer through the SP registers (gemusic's n64_rcp) */
   void dma(uint32_t len_reg, bool to_rsp);
+  /* SP_STATUS set/clear pairs; the CPU side writes the same register */
+  void apply_status_write(uint32_t x);
+
+private:
   void cop2(uint32_t insn);
+  uint16_t get_vflags(uint32_t which) const;   /* VCO/VCC/VCE packed, for cfc2 */
+  void set_vflags(uint32_t which, uint16_t v); /* the exact inverse, for ctc2 */
   uint8_t vbyte(uint32_t vt, uint32_t i) const;
   void set_vbyte(uint32_t vt, uint32_t i, uint8_t x);
 };

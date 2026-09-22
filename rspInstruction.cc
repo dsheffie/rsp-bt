@@ -199,7 +199,17 @@ class insn_mtc0 : public rspInsn {
 public:
   using rspInsn::rspInsn;
   void generateIR(rspFunc &f, rspInsn *delay) override {
-    f.b->CreateCall(f.helper("rspbt_mtc0", llvm::Type::getVoidTy(f.ctx), {f.ptr, f.i32, f.i32}), {f.vState, f.c32(rd), f.getGPR(rt)});
+    llvm::Value *changed = f.b->CreateCall(
+      f.helper("rspbt_mtc0", f.i32, {f.ptr, f.i32, f.i32}), {f.vState, f.c32(rd), f.getGPR(rt)});
+    /* A DMA into IMEM overwrites the microcode this translation was built from -- an
+     * overlay being paged in.  Leave here and let run() pick up the new image; carrying
+     * on would execute the code that used to be there. */
+    llvm::BasicBlock *swapped = f.newBlock("imem_swapped");
+    llvm::BasicBlock *cont = f.newBlock("mtc0_cont");
+    f.b->CreateCondBr(f.b->CreateICmpNE(changed, f.c32(0)), swapped, cont);
+    f.b->SetInsertPoint(swapped);
+    f.exitToInterp((addr + 4) & 0xffc);
+    f.b->SetInsertPoint(cont);
   }
 };
 

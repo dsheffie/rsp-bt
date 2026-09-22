@@ -21,5 +21,8 @@ obj/%.o: %.cc
 
 -include obj/*.d
 
+tests/rsp_difftest: tests/rsp_difftest.cc librspbt.a
+	$(CXX) $(CXXFLAGS) $(LLVM_CXXFLAGS) -I. -o $@ $< librspbt.a $(shell $(LLVM_CONFIG) --ldflags --libs) -lpthread
+
 clean:
-	rm -rf obj librspbt.a
+	rm -rf obj librspbt.a tests/rsp_difftest
