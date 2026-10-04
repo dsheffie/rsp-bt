@@ -426,14 +426,18 @@ void rsp_t::lwc2(uint32_t insn) {
      * ambiguous -- and is refused rather than guessed at. */
     case 11: /* ltv */
       {
-	if(e != 0) {
-	  RSP_DIE("ltv element %u: the slice-to-memory mapping is undocumented for a "
-		  "non-zero element and has not been measured", e);
+	/* element(0) is ignored; element(3..1) picks the diagonal. */
+	if((e >> 1) != 0) {
+	  RSP_DIE("ltv diagonal %u: the two references disagree on which way the "
+		  "register rotates, so this is refused rather than guessed", e >> 1);
 	}
 	const uint32_t ea = r[base] + (offs << 4);
 	const uint32_t group = vt & 0x18;
+	/* Lane L comes from the Lth short, but the walk wraps inside a 16-byte window
+	 * anchored at the 8-byte boundary below ea -- it does not run on linearly. */
+	const uint32_t win = ea & ~7u, off = ea - win;
 	for(uint32_t sl = 0; sl < 8; sl++) {
-	  const uint32_t m = (ea + 2 * sl) & 0xfff;
+	  const uint32_t m = (win + ((off + 2 * sl) & 15)) & 0xfff;
 	  v[group | sl][sl] = static_cast<int16_t>((mem[m] << 8) | mem[(m + 1) & 0xfff]);
 	}
       }
@@ -441,10 +445,20 @@ void rsp_t::lwc2(uint32_t insn) {
     case 6: /* lpv */
     case 7: /* luv */
       {
+	/* `element` picks which lane the first byte lands in, the lanes wrapping round.
+	 *
+	 * The bytes themselves are read consecutively.  r64emu's doc says they instead
+	 * wrap inside their 8-byte block, with a worked example, but that cannot be what
+	 * the hardware does: libdragon's VADPCM decoder advances its pointer one byte
+	 * past the frame's control byte and then lpv's eight residuals from it, so under
+	 * a block wrap it would read the bytes *before* the pointer.  Implementing the
+	 * wrap drives that decoder's output to near full scale; reading consecutively
+	 * leaves it correct, and that microcode runs on real silicon.  Consecutive wins. */
 	const uint32_t ea = r[base] + (offs << 3);
 	const uint32_t shift = (op == 6) ? 8 : 7;
 	for(uint32_t i = 0; i < 8; i++) {
-	  v[vt][i] = static_cast<int16_t>(static_cast<uint16_t>(mem[(ea + i) & 0xfff]) << shift);
+	  const uint8_t b = mem[(ea + i) & 0xfff];
+	  v[vt][(e + i) & 7] = static_cast<int16_t>(static_cast<uint16_t>(b) << shift);
 	}
       }
       break;
@@ -478,10 +492,14 @@ void rsp_t::swc2(uint32_t insn) {
     case 6: /* spv */
     case 7: /* suv */
       {
+	/* Mirrors lpv/luv, with one extra wrinkle: an element of 8 or more swaps the
+	 * signed and unsigned mappings over, so spv behaves as suv and the reverse. */
 	const uint32_t ea = r[base] + (offs << 3);
-	const uint32_t shift = (op == 6) ? 8 : 7;
+	const bool swapped = (e >= 8);
+	const uint32_t shift = ((op == 6) != swapped) ? 8 : 7;
 	for(uint32_t i = 0; i < 8; i++) {
-	  mem[(ea + i) & 0xfff] = static_cast<uint8_t>(static_cast<uint16_t>(v[vt][i]) >> shift);
+	  const uint16_t lane = static_cast<uint16_t>(v[vt][(e + i) & 7]);
+	  mem[(ea + i) & 0xfff] = static_cast<uint8_t>(lane >> shift);
 	}
       }
       break;
